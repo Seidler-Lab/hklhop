@@ -7,6 +7,7 @@ import xraydb as xr
 from matplotlib.collections import PolyCollection
 from matplotlib.pyplot import cm
 from IPython.display import display, Latex
+from itertools import combinations
 
 plt.rcParams['font.family'] = 'Times New Roman'
 
@@ -366,12 +367,14 @@ def hkl_selection(crystal_hkl, index_max, mech_angle_range,
     
 def sbca_selection(refl_max_index, crystal_max_index, crystal_angle_range, 
                        bragg_range, target_energy, energy_range, crystal_type, 
-                       save_to_excel, file_path, file_name):
+                       save_to_excel, file_path, file_name, return_dict=False):
     flag = True
+    df_dict = {}
     for e in target_energy:
         best_hkl = []
         energy_str = str(e)
-        print('---------------------------------------------')
+        if return_dict == False:
+            print('---------------------------------------------')
         poss_hkls = energy_filter_list(refl_max_index, e, energy_range, bragg_range, crystal_type, True);
         hkls = []
         check = []
@@ -400,9 +403,9 @@ def sbca_selection(refl_max_index, crystal_max_index, crystal_angle_range,
                 bragg = 180*np.arcsin(b/(e))/np.pi
             else:
                 bragg = -1.0
-            ghkl = '['+str(i[0])+' '+str(i[1])+' '+str(i[2])+']'
+            ghkl = [int(i[0]), int(i[1]), int(i[2])]
             for j in xtal_hkls:
-                g0 = '['+str(j[0])+' '+str(j[1])+' '+str(j[2])+']'
+                g0 = [int(j[0]), int(j[1]), int(j[2])]
                 alpha = 180*get_angle(i,j)/np.pi
                 if crystal_angle_range[0]<(bragg+alpha)<crystal_angle_range[1]:
                     best_hkl.append([energy_str, ghkl, bragg, g0, alpha, bragg+alpha])
@@ -416,9 +419,11 @@ def sbca_selection(refl_max_index, crystal_max_index, crystal_angle_range,
         df.columns = ['E (eV)', '$G_{hkl}$', r'$\theta_B$ (deg)', '$G_{0}$', r'$\alpha$ (deg)', '$\theta_M$ (deg)']
         G_hkl = str(i[0])+str(i[1])+str(i[2])
         thetaB = str(bragg.round(2))
-        display(Latex('Table for target energy of ' + energy_str + ' eV'))
-        display(df.round(2))
+        if return_dict == False:
+            display(Latex('Table for target energy of ' + energy_str + ' eV'))
+            display(df.round(2))
         df.columns = ['E (eV)', 'G_hkl', 'Bragg (deg)', 'G_0', 'alpha (deg)', 'Mech (deg)']
+        df_dict[str(e)] = df
         if save_to_excel == True:
             file = file_path + file_name + '.xlsx'
             if flag == True:
@@ -428,7 +433,118 @@ def sbca_selection(refl_max_index, crystal_max_index, crystal_angle_range,
                 writer = pd.ExcelWriter(file, engine = 'openpyxl', mode = 'a')
             df.to_excel(writer, sheet_name =  energy_str + 'eV')
             writer.close()
-    print('---------------------------------------------')
+    if return_dict == False:
+        print('---------------------------------------------')
+    
+    if return_dict == True:
+        return df_dict
+    
+def optimal_sbcas(hkl_max_index, sbca_max_index, mechanical_angle_range, 
+                  bragg_angle_range, target_energy, energy_range, crystal_type, max_N):
+    # Generate data frame of both Si and Ge crystal
+    Si_table = sbca_selection(hkl_max_index, sbca_max_index, mechanical_angle_range, bragg_angle_range,
+                              target_energy, energy_range, 'Si', False,'', '', return_dict=True)
+    for key in Si_table:
+        Si_table[key]['G_hkl'] = [['Si'] + Ghkl for Ghkl in Si_table[key]['G_hkl']]
+        Si_table[key]['G_0'] = [['Si'] + G0 for G0 in Si_table[key]['G_0']]
+        
+    Ge_table = sbca_selection(hkl_max_index, sbca_max_index, mechanical_angle_range, bragg_angle_range,
+                              target_energy, energy_range, 'Ge', False,'', '', return_dict=True)
+    for key in Ge_table:
+        Ge_table[key]['G_hkl'] = [['Ge'] + Ghkl for Ghkl in Ge_table[key]['G_hkl']]
+        Ge_table[key]['G_0'] = [['Ge'] + G0 for G0 in Ge_table[key]['G_0']]
+
+    table = {}
+    if crystal_type == 'Si_n_Ge':
+        table = Si_table
+        for key in Ge_table.keys():
+            if key in table.keys():
+                table[key] = pd.concat([table[key], Ge_table[key]], ignore_index=True)
+            else:
+                table[key] = Ge_table[key]
+    elif crystal_type == 'Si':
+        table = Si_table
+    elif crystal_type == 'Ge':
+        table = Ge_table
+    else:
+        print('Invalid crystal type entered!')
+        
+    # Calculate angle distance
+    for key in table.keys():
+        table[key]['ang_dist'] = np.sqrt(np.square(85-table[key]['Bragg (deg)']) + np.square(table[key]['alpha (deg)']))
+        
+    # make a table loging what energy each G0 can do
+    all_G0 = []
+    for key in table:
+        all_G0.extend(table[key]['G_0'])
+
+    unique_G0 = set(map(tuple, all_G0))
+    unique_G0 = [list(lst) for lst in unique_G0]
+    df = pd.DataFrame()
+    df['G_0'] = unique_G0
+
+    for key in table:
+        FoundG0 = []
+        for G0 in df['G_0']:
+            if G0 in list(table[key]['G_0']):
+                FoundG0.append(1)
+            else:
+                FoundG0.append(0)
+        df[str(key)] = FoundG0
+    
+    # adding up angle dsitance for each G0
+    ave_Rs = []
+    for G0_ind, target_G0 in enumerate(df['G_0']):
+        sum_R = 0
+        for key in table:
+            # for a given metal, find the ind in the original list where the reflection uses a certain G0
+            indices = []
+            for i, G0 in enumerate(list(table[key]['G_0'])):
+                if G0 == target_G0:
+                    indices.append(i)
+            if indices != []:
+                # summing up the minimun R for each metal for a given G0
+                sum_R = sum_R + min([table[key]['ang_dist'][i] for i in indices])
+        ave_R = sum_R/np.sum(df.iloc[G0_ind, 1:])
+        ave_Rs.append(ave_R)
+    df['ave R'] = ave_Rs
+    
+    # find the optimal set of SBCA that spans the given energies
+    if max_N > len(target_energy):
+        print('Maximun number of SBCAs entered is larger than the number of energies selected.')
+    else:
+        numbers = list(range(len(df['G_0'])))
+        result = []
+        for N in list(range(max_N, 0, -1)):
+            print('---------------------------------------------')
+            display(Latex('Optimizing: Number of SBCA = '+ str(N) + '...'))
+            combinations_list = list(combinations(numbers, N))
+            #loop over each combo to see if it covers all metals
+            best_R = 1000
+            best_combo = np.empty((1, N))
+            for combo in combinations_list:
+                flag = np.zeros(df.shape[1]-2)
+                ave_R = 0
+                for i in combo:
+                    flag = flag + df.iloc[i, 1:-1]
+                    ave_R = ave_R + df.iloc[i, -1]
+                if min(flag)==0:
+                    continue
+                else:
+                    ave_R = ave_R/N
+                    if ave_R < best_R:
+                        best_R = ave_R
+                        best_combo = combo
+            display(Latex('When using '+str(N)+' SBCAs:'+'\n'))
+            G0s = []
+            for G0 in [df['G_0'][i] for i in best_combo]:
+                G0s.append(G0[0]+'['+str(G0[1])+', '+str(G0[2])+', '+str(G0[3])+']')
+            display(Latex('G0 = '+', '.join(G0s)))
+            display(Latex('Average Angle Distance = '+str(round(best_R, 2))))
+                    
+            result.append([N, best_combo, best_R])
+    
+    return None
     
 def bar_chart(crystal_hkl, crystal_type, index_max, min_thetaB_list, 
               max_alpha, max_bragg, energy_range, elements, 
