@@ -535,15 +535,41 @@ def optimal_sbcas(hkl_max_index, sbca_max_index, mechanical_angle_range,
                     if ave_R < best_R:
                         best_R = ave_R
                         best_combo = combo
-            display(Latex('When using '+str(N)+' SBCAs:'+'\n'))
+          
             G0s = []
             for G0 in [df['G_0'][i] for i in best_combo]:
                 G0s.append(G0[0]+'['+str(G0[1])+', '+str(G0[2])+', '+str(G0[3])+']')
             display(Latex('G0 = '+', '.join(G0s)))
             display(Latex('Average Angle Distance = '+str(round(best_R, 2))))
-                    
+            
+            df_result = pd.DataFrame()
+            df_result['E (eV)'] = table.keys()
+            
+            best_Ghkls = []
+            best_G0s = []
+            braggs = []
+            alphas = []
+            
+            for energy in table.keys():
+                inds = []
+                for ind, G0 in enumerate(list(table[key]['G_0'])):
+                    if G0 in [df['G_0'][i] for i in best_combo]:
+                        inds.append(ind)
+                
+                ang_dists = [table[energy]['ang_dist'][i] for i in inds]
+                min_ind = ang_dists.index(min(ang_dists))
+                ind = inds[min_ind]
+                best_Ghkls.append(table[energy]['G_hkl'][ind][0]+str(table[energy]['G_hkl'][ind][1:]))
+                best_G0s.append(table[energy]['G_0'][ind][0]+str(table[energy]['G_0'][ind][1:]))
+                braggs.append(table[energy]['Bragg (deg)'][ind])
+                alphas.append(table[energy]['alpha (deg)'][ind])
+            df_result['G_0'] = best_G0s
+            df_result['G_hkl'] = best_Ghkls
+            df_result['Bragg (deg)'] = braggs
+            df_result['alpha (deg)'] = alphas
+            display(df_result)
             result.append([N, best_combo, best_R])
-    
+
     return None
     
 def bar_chart(crystal_hkl, crystal_type, index_max, min_thetaB_list, 
